@@ -1,0 +1,18 @@
+[Unit]
+Description=fc-agent (onctl-runners fc-host agent registration/dispatch)
+Documentation=https://github.com/cdalar/onctl-runners/blob/main/docs/plans/fc-host-agent-registration.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/onctl-fc-agent/env
+ExecStart=/usr/local/bin/fc-agent.sh
+Restart=always
+RestartSec=5
+# onctl create/destroy needs root (KVM device access, network namespace
+# setup) -- matches how bootstrap-host.sh/install.sh provision this host.
+User=root
+
+[Install]
+WantedBy=multi-user.target
