@@ -7,29 +7,27 @@
 # you've decided to flip this specific host's dispatch transport to
 # "agent".
 #
-# Designed to run as a single curl-pipe-bash command, as root, with no
+# Designed to run as a single curl-pipe-bash command, AS ROOT, with no
 # required env vars in the common case: this file and its sibling assets
 # (fc-agent.sh, fc-agent.service, github-runner-jit.sh) are mirrored to the
 # public github.com/cdalar/onctl-runners-fc-host repo by a sync workflow in
 # onctl-runners, reachable at clean onctl.io URLs via redirects in
 # onctl-web (see docs/plans/fc-host-public-install-repo.md) -- so it
-# fetches those siblings over HTTPS rather than assuming a local checkout:
+# fetches those siblings over HTTPS rather than assuming a local checkout.
+# If you're not already root, become root first (e.g. `sudo -i`) rather
+# than trying to wedge `sudo` into the command below -- `sudo VAR=x cmd`
+# does not actually set VAR (sudo would try to run a program literally
+# named "VAR=x"), which makes combining sudo with env var overrides on a
+# piped one-liner needlessly fiddly to get right:
 #
-#   curl -fsSL https://onctl.io/fc-host-install.sh | sudo bash
+#   curl -fsSL https://onctl.io/fc-host-install.sh | bash
 #
 # CONTROLLER_URL/HOST_NAME/AGENT_TOKEN all have sensible defaults (below)
 # and only need overriding for a non-default setup:
 #
-#   curl -fsSL https://onctl.io/fc-host-install.sh | sudo env \
-#     CONTROLLER_URL=https://runners.onctl.io \
+#   curl -fsSL https://onctl.io/fc-host-install.sh | \
 #     HOST_NAME=<the key this host will have in runners.json hosts map> \
-#     AGENT_TOKEN=<a fixed token, e.g. to match one already in runners.json> \
 #       bash
-#
-# `sudo VAR=x cmd` does NOT set VAR -- sudo would try to run a program
-# literally named "VAR=x". `sudo env VAR=x cmd` is the correct idiom: sudo
-# runs the real `env` binary as root, which then sets VAR for cmd.
-# Already-root shells can drop `sudo env` and just prefix VAR=x directly.
 #
 # This only sets up the host side. Separately, on the controller side, the
 # operator still has to add/update this host's entry in runners.json:
@@ -44,7 +42,7 @@ set -euo pipefail
 # write-failure is exactly what "forgot sudo" looks like with no
 # indication of why.
 if [ "$(id -u)" -ne 0 ]; then
-  echo "install-fc-agent.sh must run as root (it writes to /usr/local/bin, /etc/systemd/system, and /root) -- re-run as root, e.g.: sudo bash install-fc-agent.sh" >&2
+  echo "install-fc-agent.sh must run as root (it writes to /usr/local/bin, /etc/systemd/system, and /root) -- become root first (e.g. sudo -i) and re-run" >&2
   exit 1
 fi
 
