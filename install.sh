@@ -198,6 +198,39 @@ iptables -A FORWARD -i "$OUTBOUND_IFACE" -o fcbr0 -m state --state RELATED,ESTAB
 apt-get install -y -qq iptables-persistent >/dev/null
 netfilter-persistent save
 
+# This host is multi-tenant: every runner's tap device shares fcbr0.
+# iptables FORWARD above only covers routed fcbr0<->uplink traffic; frames
+# bridged directly between two taps never reach it, so without this, any VM
+# could reach any other VM's IP directly. ebtables filters at the bridge
+# layer instead. Inlined from setup-fc-bridge-isolation.sh for the same
+# self-containment reason as the NAT block above.
+say "isolating microVMs from each other on fcbr0"
+apt-get install -y -qq ebtables >/dev/null
+cat > /usr/local/sbin/fc-bridge-isolation.sh <<'EOF'
+#!/bin/sh
+set -e
+ebtables -t filter -F FORWARD
+ebtables -t filter -A FORWARD --logical-in fcbr0 -j DROP
+EOF
+chmod 755 /usr/local/sbin/fc-bridge-isolation.sh
+cat > /etc/systemd/system/fc-bridge-isolation.service <<'EOF'
+[Unit]
+Description=Isolate Firecracker microVMs from each other on fcbr0
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/fc-bridge-isolation.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now fc-bridge-isolation.service
+systemctl restart fc-bridge-isolation.service
+
 if [ "$SKIP_SMOKE_TEST" -eq 0 ]; then
   say "running smoke test (create -> docker run -> destroy), vcpu=$SMOKE_VCPU memory=${SMOKE_MEMORY}MiB"
   onctl create -n fc-install-smoke-test --provider fc --vcpu "$SMOKE_VCPU" --memory "$SMOKE_MEMORY" \

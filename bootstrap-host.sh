@@ -226,6 +226,9 @@ fi
 say "setting up outbound NAT"
 bash "$SCRIPT_DIR/setup-nat.sh" ${OUTBOUND_IFACE:+"$OUTBOUND_IFACE"}
 
+say "isolating microVMs from each other on fcbr0 (multi-tenant: no VM-to-VM traffic)"
+bash "$SCRIPT_DIR/setup-fc-bridge-isolation.sh"
+
 if [ "$SKIP_SMOKE_TEST" -eq 0 ]; then
   say "running smoke test (create -> docker run -> destroy), vcpu=$SMOKE_VCPU memory=${SMOKE_MEMORY}MiB"
   onctl create -n fc-bootstrap-smoke-test --provider fc --vcpu "$SMOKE_VCPU" --memory "$SMOKE_MEMORY" \
