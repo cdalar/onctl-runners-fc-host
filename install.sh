@@ -198,13 +198,6 @@ iptables -A FORWARD -i "$OUTBOUND_IFACE" -o fcbr0 -m state --state RELATED,ESTAB
 apt-get install -y -qq iptables-persistent >/dev/null
 netfilter-persistent save
 
-# Parent dir for profiles.cacheVolumeDir's per-repo golden cache images
-# (controller/worker.go's cacheVolumePath) — onctl's --cache-image doesn't
-# create it, so a profile using it against a host missing this dir fails on
-# first use. Cheap to create unconditionally even if this host's profiles
-# never end up using --cache-image.
-mkdir -p /opt/fc/gocache-vols
-
 if [ "$SKIP_SMOKE_TEST" -eq 0 ]; then
   say "running smoke test (create -> docker run -> destroy), vcpu=$SMOKE_VCPU memory=${SMOKE_MEMORY}MiB"
   onctl create -n fc-install-smoke-test --provider fc --vcpu "$SMOKE_VCPU" --memory "$SMOKE_MEMORY" \

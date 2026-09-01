@@ -87,28 +87,6 @@ else
     say "actions-runner already present, skipping download"
 fi
 
-if [ -b /dev/vdb ]; then
-    # Second drive, attached by onctl when the VM was created with
-    # --cache-image (a persistent, per-repo Go build cache — see
-    # onctl-runners' docs/ROADMAP.md step 6 for why: golangci-lint's own
-    # package-loading pass needs GOCACHE/GOMODCACHE to cover the whole
-    # dependency graph, not just what a plain `go build`/`go test` touches,
-    # and a shared GH actions/cache blob turned out not to reliably cover
-    # that for this host's job volume). Already ext4-formatted by onctl;
-    # just mount it and point the job's env at it via the same .env
-    # mechanism already used for ImageOS.
-    say "mounting persistent Go build cache from /dev/vdb"
-    mkdir -p /opt/gocache
-    mount /dev/vdb /opt/gocache
-    mkdir -p /opt/gocache/go-build /opt/gocache/mod
-    chown -R "$RUNNER_USER:$RUNNER_USER" /opt/gocache
-    {
-        echo "GOCACHE=/opt/gocache/go-build"
-        echo "GOMODCACHE=/opt/gocache/mod"
-    } >> "$RUNNER_HOME/.env"
-else
-    say "no cache disk attached (/dev/vdb not present), skipping"
-fi
 
 say "starting runner via JIT config in background (ephemeral: exits after one job)"
 cd "$RUNNER_HOME"
