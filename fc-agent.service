@@ -13,6 +13,15 @@ RestartSec=5
 # onctl create/destroy needs root (KVM device access, network namespace
 # setup) -- matches how bootstrap-host.sh/install.sh provision this host.
 User=root
+# Default KillMode (control-group) sends the stop/restart signal to every
+# process in this unit's cgroup -- not just fc-agent.sh itself, but every
+# firecracker process a dispatched `onctl create` job ever spawned, since
+# a daemonized firecracker child never leaves the cgroup it was born into.
+# A routine fc-agent.sh redeploy (`systemctl restart fc-agent`) would
+# therefore silently kill every currently-running runner VM on this host
+# as a side effect. `process` scopes the signal to fc-agent.sh's own PID
+# only, leaving already-running microVMs untouched.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
