@@ -98,10 +98,37 @@ run_job() {
     '{output: $output, error: $err}')
 
   log "job ${id}: posting result"
+  local result_file
+  result_file=$(mktemp)
   local result_code
-  result_code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST "${auth_header[@]}" -H 'Content-Type: application/json' \
+  result_code=$(curl -sS -m 15 -o "$result_file" -w '%{http_code}' -X POST "${auth_header[@]}" -H 'Content-Type: application/json' \
     -d "$result_json" "${CONTROLLER_URL}/hosts/${HOST_NAME}/jobs/${id}/result") || result_code="curl-failed"
   log "job ${id}: result post finished, http=${result_code}"
+
+  local abandoned="false"
+  if [ -s "$result_file" ]; then
+    abandoned=$(jq -r '.abandoned // false' "$result_file" 2>/dev/null || echo false)
+  fi
+  rm -f "$result_file"
+
+  # The controller may have given up on this job (ctx timeout, restart)
+  # while we were still running it. A successful create in that window
+  # would otherwise leave an untracked microVM (names are unique per job
+  # and never reused); destroy it ourselves.
+  if [ "$status" -eq 0 ] && [ "$abandoned" = "true" ] && [ "${args[0]:-}" = "create" ]; then
+    local vm_name="" prev=""
+    for a in "${args[@]}"; do
+      if [ "$prev" = "-n" ] || [ "$prev" = "--name" ]; then
+        vm_name="$a"
+        break
+      fi
+      prev="$a"
+    done
+    if [ -n "$vm_name" ]; then
+      log "job ${id}: controller abandoned create of ${vm_name}; destroying leftover microVM"
+      env "${env_assignments[@]}" "$bin" destroy "$vm_name" -f >/dev/null 2>&1 || log "job ${id}: leftover destroy of ${vm_name} failed"
+    fi
+  fi
 }
 
 log "polling for work"
