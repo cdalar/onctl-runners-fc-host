@@ -86,7 +86,7 @@ systemctl enable --now chrony >/dev/null
 
 say "installing onctl"
 if ! command -v onctl >/dev/null 2>&1; then
-  curl -sLS https://docs.onctl.io/get.sh | bash >/dev/null
+  curl -sLS https://onctl.sh/get.sh | bash >/dev/null
   install onctl /usr/local/bin/onctl
   rm -f onctl
   echo "" >&2

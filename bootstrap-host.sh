@@ -127,7 +127,7 @@ else
     # join an *existing* pool, re-run with --source-host instead — see the
     # skew warning above for why that matters once a profile uses
     # --cache-image or any other flag not every onctl release recognizes.
-    curl -sLS https://docs.onctl.io/get.sh | bash >/dev/null
+    curl -sLS https://onctl.sh/get.sh | bash >/dev/null
     install onctl /usr/local/bin/onctl
     rm -f onctl
   else
