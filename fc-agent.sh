@@ -25,11 +25,23 @@ AGENT_VERSION="${AGENT_VERSION:-dev}"
 
 log() { echo "[fc-agent] $*" >&2; }
 
-auth_header=(-H "Authorization: Bearer ${AGENT_TOKEN}")
+# agent_curl is curl plus this host's bearer token. The header goes in as a
+# curl config on stdin (-K -), never as -H on the command line: argv is
+# readable by every local user via ps / /proc/<pid>/cmdline, and the
+# jobs/next long-poll below is alive essentially all the time -- so the
+# token used to just sit there. It lets its holder claim this host's jobs
+# (runner JIT configs included) from the controller. This process's
+# environment, where AGENT_TOKEN itself lives, is only readable by root.
+# A here-string, not a header file on disk, so there's nothing to clean up.
+# Consequence: stdin is taken -- pass request bodies with -d "<string>",
+# never @-.
+agent_curl() {
+  curl -K - "$@" <<<"header = \"Authorization: Bearer ${AGENT_TOKEN}\""
+}
 
 register() {
-  curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST \
-    "${auth_header[@]}" -H 'Content-Type: application/json' \
+  agent_curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' \
     -d "{\"version\":\"${AGENT_VERSION}\"}" \
     "${CONTROLLER_URL}/hosts/${HOST_NAME}/register"
 }
@@ -52,7 +64,7 @@ log "registered with ${CONTROLLER_URL} as ${HOST_NAME}"
 heartbeat_loop() {
   while true; do
     sleep "${HEARTBEAT_INTERVAL_SECONDS}"
-    curl -sS -m 15 -o /dev/null -X POST "${auth_header[@]}" \
+    agent_curl -sS -m 15 -o /dev/null -X POST \
       "${CONTROLLER_URL}/hosts/${HOST_NAME}/heartbeat" || log "heartbeat failed"
   done
 }
@@ -101,7 +113,7 @@ run_job() {
   local result_file
   result_file=$(mktemp)
   local result_code
-  result_code=$(curl -sS -m 15 -o "$result_file" -w '%{http_code}' -X POST "${auth_header[@]}" -H 'Content-Type: application/json' \
+  result_code=$(agent_curl -sS -m 15 -o "$result_file" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
     -d "$result_json" "${CONTROLLER_URL}/hosts/${HOST_NAME}/jobs/${id}/result") || result_code="curl-failed"
   log "job ${id}: result post finished, http=${result_code}"
 
@@ -133,7 +145,7 @@ run_job() {
 
 log "polling for work"
 while true; do
-  if ! resp=$(curl -sS -m 40 -w '\n%{http_code}' "${auth_header[@]}" \
+  if ! resp=$(agent_curl -sS -m 40 -w '\n%{http_code}' \
     "${CONTROLLER_URL}/hosts/${HOST_NAME}/jobs/next"); then
     log "jobs/next request failed, retrying in 5s"
     sleep 5
