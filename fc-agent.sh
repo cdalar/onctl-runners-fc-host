@@ -92,7 +92,22 @@ run_job() {
   local -a env_assignments=()
   while IFS= read -r kv; do env_assignments+=("$kv"); done < <(jq -r '(.env // {}) | to_entries[] | "\(.key)=\(.value)"' <<<"$job_json")
 
-  log "running job ${id}: ${bin} ${args[*]:-}"
+  # Log the command with every `-e KEY=VALUE` value masked: for a create
+  # that's JIT_CONFIG, the runner's GitHub credential (RSA private key
+  # included), and this log line lands in journald on the host. Keys stay
+  # visible; masking all -e values rather than just JIT_CONFIG means a
+  # future secret passed the same way doesn't need its own rule here.
+  local -a log_args=()
+  local prev_arg=""
+  for a in "${args[@]}"; do
+    if { [ "$prev_arg" = "-e" ] || [ "$prev_arg" = "--env" ]; } && [[ "$a" == *=* ]]; then
+      log_args+=("${a%%=*}=<redacted>")
+    else
+      log_args+=("$a")
+    fi
+    prev_arg="$a"
+  done
+  log "running job ${id}: ${bin} ${log_args[*]:-}"
   local output status=0
   output=$(env "${env_assignments[@]}" "$bin" "${args[@]}" 2>&1) || status=$?
   log "job ${id}: exec finished, status=${status}"
