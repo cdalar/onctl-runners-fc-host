@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs fc-agent as a systemd service on this host, so the controller
+# Installs onctl-host-agent as a systemd service on this host, so the controller
 # can dispatch onctl create/destroy here over HTTPS instead of SSH (see
 # docs/plans/fc-host-agent-registration.md). Opt-in and separate from
 # bootstrap-host.sh/install.sh, which already stop short of the
@@ -9,7 +9,8 @@
 #
 # Designed to run as a single curl-pipe-bash command, AS ROOT, with no
 # required env vars in the common case: this file and its sibling assets
-# (fc-agent.sh, fc-agent.service, github-runner-jit.sh) are mirrored to the
+# (onctl-host-agent.sh, onctl-host-agent.service, github-runner-jit.sh) are
+# mirrored to the
 # public github.com/cdalar/onctl-runners-fc-host repo by a sync workflow in
 # onctl-runners, reachable at clean onctl.io URLs via redirects in
 # onctl-web (see docs/plans/fc-host-public-install-repo.md) -- so it
@@ -20,12 +21,12 @@
 # named "VAR=x"), which makes combining sudo with env var overrides on a
 # piped one-liner needlessly fiddly to get right:
 #
-#   curl -fsSL https://onctl.io/fc-host-install.sh | bash
+#   curl -fsSL https://onctl.io/install-host-agent.sh | bash
 #
 # CONTROLLER_URL/HOST_NAME/AGENT_TOKEN all have sensible defaults (below)
 # and only need overriding for a non-default setup:
 #
-#   curl -fsSL https://onctl.io/fc-host-install.sh | \
+#   curl -fsSL https://onctl.io/install-host-agent.sh | \
 #     HOST_NAME=<the key this host will have in runners.json hosts map> \
 #       bash
 #
@@ -42,12 +43,44 @@ set -euo pipefail
 # write-failure is exactly what "forgot sudo" looks like with no
 # indication of why.
 if [ "$(id -u)" -ne 0 ]; then
-  echo "install-fc-agent.sh must run as root (it writes to /usr/local/bin, /etc/systemd/system, and /root) -- become root first (e.g. sudo -i) and re-run" >&2
+  echo "install-host-agent.sh must run as root (it writes to /usr/local/bin, /etc/systemd/system, and /root) -- become root first (e.g. sudo -i) and re-run" >&2
   exit 1
 fi
 
-ENV_FILE=/etc/onctl-fc-agent/env
+ENV_FILE=/etc/onctl-host-agent/env
 
+# The agent was called fc-agent until 2026-09 (fc-agent.sh, fc-agent.service,
+# /etc/onctl-fc-agent/env). A host installed under that name is migrated in
+# place further down; until then its env file is where this host's existing
+# identity lives.
+LEGACY_UNIT=fc-agent
+LEGACY_BIN=/usr/local/bin/fc-agent.sh
+LEGACY_UNIT_FILE=/etc/systemd/system/fc-agent.service
+LEGACY_ENV_FILE=/etc/onctl-fc-agent/env
+
+EXISTING_ENV_FILE=""
+if [ -f "$ENV_FILE" ]; then
+  EXISTING_ENV_FILE="$ENV_FILE"
+elif [ -f "$LEGACY_ENV_FILE" ]; then
+  EXISTING_ENV_FILE="$LEGACY_ENV_FILE"
+  echo "found a legacy fc-agent install ($LEGACY_ENV_FILE) -- will migrate it to onctl-host-agent"
+fi
+
+# existing_env KEY: that key's value from this host's existing env file, or
+# empty. Never fails (set -e) when the file or the key is missing.
+existing_env() {
+  [ -n "$EXISTING_ENV_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$EXISTING_ENV_FILE"
+}
+
+# Idempotent, same reasoning as AGENT_TOKEN below: a re-run without env
+# overrides must keep pointing this host at the same controller under the
+# same name. Re-deriving HOST_NAME from `hostname` on a host first installed
+# with an explicit HOST_NAME=... would silently rename it out of
+# runners.json's "hosts" map.
+if [ -z "${CONTROLLER_URL:-}" ]; then
+  CONTROLLER_URL="$(existing_env CONTROLLER_URL)"
+fi
 CONTROLLER_URL="${CONTROLLER_URL:-https://runners.onctl.io}"
 
 # Sanitized to the same charset every existing runners.json host key
@@ -55,19 +88,22 @@ CONTROLLER_URL="${CONTROLLER_URL:-https://runners.onctl.io}"
 # have dots, underscores, or mixed case that would otherwise land in
 # runners.json's "hosts" map looking unlike every other entry there.
 if [ -z "${HOST_NAME:-}" ]; then
+  HOST_NAME="$(existing_env HOST_NAME)"
+fi
+if [ -z "${HOST_NAME:-}" ]; then
   HOST_NAME="$(hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-|-$//g')"
 fi
 : "${HOST_NAME:?could not derive a host name from \`hostname\` -- set HOST_NAME explicitly}"
 
 # Idempotent, not just auto-generated: re-running this script (e.g. to
-# pick up a newer fc-agent.sh) must NOT silently rotate the token, or the
+# pick up a newer onctl-host-agent) must NOT silently rotate the token, or the
 # host's existing runners.json agentTokenHash would stop matching and it'd
 # quietly fall out of the pool. Reuse whatever's already on disk unless the
 # caller explicitly passes a different AGENT_TOKEN.
-if [ -z "${AGENT_TOKEN:-}" ] && [ -f "$ENV_FILE" ]; then
-  AGENT_TOKEN="$(sed -n 's/^AGENT_TOKEN=//p' "$ENV_FILE")"
+if [ -z "${AGENT_TOKEN:-}" ]; then
+  AGENT_TOKEN="$(existing_env AGENT_TOKEN)"
   if [ -n "$AGENT_TOKEN" ]; then
-    echo "reusing existing AGENT_TOKEN from $ENV_FILE (re-run detected)"
+    echo "reusing existing AGENT_TOKEN from $EXISTING_ENV_FILE (re-run detected)"
   fi
 fi
 if [ -z "${AGENT_TOKEN:-}" ]; then
@@ -82,8 +118,29 @@ fi
 # stable domain -- see docs/plans/fc-host-public-install-repo.md.
 RAW_BASE_URL="${RAW_BASE_URL:-https://onctl.io}"
 
-curl -fsSL "${RAW_BASE_URL}/fc-agent.sh" -o /usr/local/bin/fc-agent.sh
-chmod 0755 /usr/local/bin/fc-agent.sh
+# Fetch everything before touching the running install: a missing file
+# (e.g. onctl.io's redirects not deployed yet for a renamed asset) must
+# fail here, with the old agent still up, not halfway through a migration.
+STAGE_DIR="$(mktemp -d)"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+curl -fsSL "${RAW_BASE_URL}/onctl-host-agent.sh" -o "$STAGE_DIR/onctl-host-agent"
+curl -fsSL "${RAW_BASE_URL}/onctl-host-agent.service" -o "$STAGE_DIR/onctl-host-agent.service"
+
+# Stop a legacy fc-agent BEFORE the new unit starts: both would register
+# under the same HOST_NAME/token and race each other for this host's jobs.
+# Its unit has KillMode=process, so running microVMs survive the stop; a
+# create/destroy it was in the middle of does not report back (same as any
+# `systemctl restart` of the agent) -- migrate an idle host when you can.
+if [ -f "$LEGACY_UNIT_FILE" ] || [ -f "$LEGACY_BIN" ]; then
+  echo "migrating legacy fc-agent install to onctl-host-agent"
+  systemctl disable --now "$LEGACY_UNIT" 2>/dev/null || true
+  # KillMode=process only signals the main PID; reap the legacy heartbeat
+  # subshell too so it doesn't keep heartbeating alongside the new agent.
+  pkill -f "$LEGACY_BIN" 2>/dev/null || true
+  rm -f "$LEGACY_UNIT_FILE" "$LEGACY_BIN"
+fi
+
+install -m 0755 "$STAGE_DIR/onctl-host-agent" /usr/local/bin/onctl-host-agent
 
 mkdir -p "$(dirname "$ENV_FILE")"
 cat >"$ENV_FILE" <<EOF
@@ -95,9 +152,10 @@ EOF
 # runners.json's WEBHOOK_SECRET/DASHBOARD_API_TOKEN on the controller side,
 # root-only permissions, no group/other read.
 chmod 0600 "$ENV_FILE"
+# Only once the token is safely in the new env file.
+rm -rf "$(dirname "$LEGACY_ENV_FILE")"
 
-curl -fsSL "${RAW_BASE_URL}/fc-agent.service" -o /etc/systemd/system/fc-agent.service
-chmod 0644 /etc/systemd/system/fc-agent.service
+install -m 0644 "$STAGE_DIR/onctl-host-agent.service" /etc/systemd/system/onctl-host-agent.service
 
 # github-runner-jit.sh is what `onctl create -a` actually runs on the
 # guest; production profiles reference it at this exact absolute path.
@@ -114,11 +172,14 @@ else
 fi
 
 systemctl daemon-reload
-systemctl enable --now fc-agent
+systemctl enable onctl-host-agent
+# restart, not just `enable --now`: on a re-run the unit is already active,
+# and --now would leave the old script running.
+systemctl restart onctl-host-agent
 
-echo "fc-agent installed and started. Check status with:"
-echo "  systemctl status fc-agent"
-echo "  journalctl -u fc-agent -f"
+echo "onctl-host-agent installed and started. Check status with:"
+echo "  systemctl status onctl-host-agent"
+echo "  journalctl -u onctl-host-agent -f"
 echo
 echo "HOST_NAME: ${HOST_NAME} (this must be the key used in runners.json's \"hosts\" map)"
 echo "sha256 of AGENT_TOKEN, for this host's agentTokenHash in runners.json:"

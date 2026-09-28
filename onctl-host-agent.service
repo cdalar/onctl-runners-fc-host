@@ -1,25 +1,25 @@
 [Unit]
-Description=fc-agent (onctl-runners fc-host agent registration/dispatch)
+Description=onctl-host-agent (onctl-runners fc-host agent registration/dispatch)
 Documentation=https://github.com/cdalar/onctl-runners/blob/main/docs/plans/fc-host-agent-registration.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/onctl-fc-agent/env
-ExecStart=/usr/local/bin/fc-agent.sh
+EnvironmentFile=/etc/onctl-host-agent/env
+ExecStart=/usr/local/bin/onctl-host-agent
 Restart=always
 RestartSec=5
 # onctl create/destroy needs root (KVM device access, network namespace
 # setup) -- matches how bootstrap-host.sh/install.sh provision this host.
 User=root
 # Default KillMode (control-group) sends the stop/restart signal to every
-# process in this unit's cgroup -- not just fc-agent.sh itself, but every
+# process in this unit's cgroup -- not just onctl-host-agent itself, but every
 # firecracker process a dispatched `onctl create` job ever spawned, since
 # a daemonized firecracker child never leaves the cgroup it was born into.
-# A routine fc-agent.sh redeploy (`systemctl restart fc-agent`) would
+# A routine agent redeploy (`systemctl restart onctl-host-agent`) would
 # therefore silently kill every currently-running runner VM on this host
-# as a side effect. `process` scopes the signal to fc-agent.sh's own PID
+# as a side effect. `process` scopes the signal to the agent's own PID
 # only, leaving already-running microVMs untouched.
 KillMode=process
 

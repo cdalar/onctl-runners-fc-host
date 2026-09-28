@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# fc-agent: long-running daemon for an fc-host configured with "mode":
-# "agent" in the controller's runners.json (docs/plans/fc-host-agent-
-# registration.md). Registers with the controller once, heartbeats
-# periodically, and long-polls for onctl create/destroy work instead of
-# the controller SSHing in to run those commands itself — see
-# controller/README.md's "Dispatch transport: SSH vs fc-agent" section for
-# the exact endpoints this talks to. Meant to run under systemd
-# (fc-agent.service, installed by install-fc-agent.sh), not interactively.
+# onctl-host-agent (called fc-agent until 2026-09): long-running daemon for
+# an fc-host configured with "mode": "agent" in the controller's
+# runners.json (docs/plans/fc-host-agent-registration.md). Registers with
+# the controller once, heartbeats periodically, and long-polls for onctl
+# create/destroy work instead of the controller SSHing in to run those
+# commands itself — see controller/README.md's "Dispatch transport: SSH vs
+# onctl-host-agent" section for the exact endpoints this talks to. Meant to
+# run under systemd
+# (onctl-host-agent.service, installed by install-host-agent.sh), not
+# interactively.
 #
-# Required env (see fc-agent.service's EnvironmentFile):
+# Required env (see onctl-host-agent.service's EnvironmentFile):
 #   CONTROLLER_URL  e.g. https://runners.onctl.io
 #   HOST_NAME       must match this host's key in runners.json's "hosts" map
 #   AGENT_TOKEN     raw bearer token; runners.json stores only its sha256
-#                    hex digest (AgentTokenHash) -- see install-fc-agent.sh
+#                    hex digest (AgentTokenHash) -- see install-host-agent.sh
 # Optional:
 #   HEARTBEAT_INTERVAL_SECONDS  default 15
 set -euo pipefail
@@ -23,7 +25,7 @@ set -euo pipefail
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-15}"
 AGENT_VERSION="${AGENT_VERSION:-dev}"
 
-log() { echo "[fc-agent] $*" >&2; }
+log() { echo "[onctl-host-agent] $*" >&2; }
 
 # agent_curl is curl plus this host's bearer token. The header goes in as a
 # curl config on stdin (-K -), never as -H on the command line: argv is
@@ -71,7 +73,7 @@ heartbeat_loop() {
 heartbeat_loop &
 heartbeat_pid=$!
 # SIGKILL can't be trapped -- an orphaned heartbeat loop from a killed
-# fc-agent is a cosmetic annoyance (a few failed curls to a host that's
+# onctl-host-agent is a cosmetic annoyance (a few failed curls to a host that's
 # going away anyway), not a resource leak, so this is best-effort cleanup
 # rather than something requiring a process-group kill.
 trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
