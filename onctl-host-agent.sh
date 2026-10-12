@@ -17,12 +17,15 @@
 #                    hex digest (AgentTokenHash) -- see install-host-agent.sh
 # Optional:
 #   HEARTBEAT_INTERVAL_SECONDS  default 15
+#   MAX_PARALLEL_JOBS           default 4; how many claimed jobs (onctl
+#                               create/destroy) run at once
 set -euo pipefail
 
 : "${CONTROLLER_URL:?CONTROLLER_URL is required (e.g. https://runners.onctl.io)}"
 : "${HOST_NAME:?HOST_NAME is required (must match the hosts map key in runners.json for this host)}"
 : "${AGENT_TOKEN:?AGENT_TOKEN is required (the raw token whose sha256 must equal this hosts agentTokenHash in runners.json)}"
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-15}"
+MAX_PARALLEL_JOBS="${MAX_PARALLEL_JOBS:-4}"
 AGENT_VERSION="${AGENT_VERSION:-dev}"
 
 log() { echo "[onctl-host-agent] $*" >&2; }
@@ -82,11 +85,18 @@ trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
 # local subprocess and reports {output, error} back -- output is base64
 # because the controller's agentJobResult.Output is a Go []byte field,
 # which encoding/json marshals/unmarshals as base64 on the wire.
+# after_pid, if set, is an earlier job for the same microVM that must
+# finish first (see the poll loop below).
 run_job() {
-  local job_json="$1"
+  local job_json="$1" after_pid="${2:-}"
   local id bin
   id=$(jq -r '.id' <<<"$job_json")
   bin=$(jq -r '.bin' <<<"$job_json")
+
+  if [ -n "$after_pid" ] && kill -0 "$after_pid" 2>/dev/null; then
+    log "job ${id}: waiting for an earlier job on the same microVM (pid ${after_pid})"
+    while kill -0 "$after_pid" 2>/dev/null; do sleep 0.2; done
+  fi
 
   local -a args=()
   while IFS= read -r a; do args+=("$a"); done < <(jq -r '.args[]? // empty' <<<"$job_json")
@@ -160,8 +170,68 @@ run_job() {
   fi
 }
 
-log "polling for work"
+# job_vm_name prints the microVM a job acts on (`create -n NAME ...` or
+# `destroy NAME ...`), or nothing for anything else.
+job_vm_name() {
+  jq -r '
+    .args as $a
+    | if $a[0] == "create" then
+        (($a | index("-n")) // ($a | index("--name"))) as $i
+        | if $i then $a[$i + 1] else "" end
+      elif $a[0] == "destroy" then $a[1] // ""
+      else "" end' <<<"$1"
+}
+
+# Jobs run in the background, up to MAX_PARALLEL_JOBS at once, so one
+# onctl create no longer holds up every other create and destroy for this
+# host: a workflow that fans out to several jobs used to bring its runners
+# online one after another, each waiting out the creates ahead of it. The
+# controller already queues and tracks jobs per id, and onctl takes its own
+# locks around IP allocation, so nothing else needs to change for that.
+#
+# What the old one-at-a-time loop gave for free was ordering, and that is
+# kept per microVM: a job is started only after the previous job for the
+# same VM name has exited. Otherwise the destroy the controller sends after
+# giving up on a slow create could finish first, find nothing, and leave
+# the create to produce a microVM nobody tracks.
+#
+# A background job outlives this process: systemd stops only the agent's
+# own PID (KillMode=process in the unit), so on a restart the jobs already
+# running finish and report on their own.
+declare -a job_pids=()
+declare -A vm_last_pid=()
+
+# reap_jobs drops finished jobs from job_pids / vm_last_pid.
+reap_jobs() {
+  local -a alive=()
+  local pid name
+  for pid in "${job_pids[@]:-}"; do
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive+=("$pid"); fi
+  done
+  job_pids=("${alive[@]:-}")
+  for name in "${!vm_last_pid[@]}"; do
+    kill -0 "${vm_last_pid[$name]}" 2>/dev/null || unset "vm_last_pid[$name]"
+  done
+}
+
+running_jobs() {
+  local n=0 pid
+  for pid in "${job_pids[@]:-}"; do
+    [ -n "$pid" ] && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+log "polling for work (up to ${MAX_PARALLEL_JOBS} jobs at once)"
 while true; do
+  # Don't claim a job there is no slot for: an unclaimed job stays in the
+  # controller's queue, where a cancelled create is still skipped.
+  reap_jobs
+  while [ "$(running_jobs)" -ge "$MAX_PARALLEL_JOBS" ]; do
+    wait -n 2>/dev/null || true
+    reap_jobs
+  done
+
   if ! resp=$(agent_curl -sS -m 40 -w '\n%{http_code}' \
     "${CONTROLLER_URL}/hosts/${HOST_NAME}/jobs/next"); then
     log "jobs/next request failed, retrying in 5s"
@@ -172,7 +242,12 @@ while true; do
   body=$(printf '%s' "$resp" | sed '$d')
   case "$http_code" in
   200)
-    run_job "$body"
+    vm_name=$(job_vm_name "$body" 2>/dev/null || true)
+    after_pid=""
+    if [ -n "$vm_name" ]; then after_pid="${vm_last_pid[$vm_name]:-}"; fi
+    run_job "$body" "$after_pid" &
+    job_pids+=("$!")
+    if [ -n "$vm_name" ]; then vm_last_pid[$vm_name]=$!; fi
     ;;
   204)
     : # no job waiting -- poll again immediately
