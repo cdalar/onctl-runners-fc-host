@@ -127,9 +127,9 @@ else
     # join an *existing* pool, re-run with --source-host instead — see the
     # skew warning above for why that matters once a profile uses
     # --cache-image or any other flag not every onctl release recognizes.
-    curl -sLS https://onctl.sh/get.sh | bash >/dev/null
-    install onctl /usr/local/bin/onctl
-    rm -f onctl
+    # get.sh refuses to run under sudo (it would install into root's
+    # $HOME); that doesn't apply with an explicit ONCTL_INSTALL_DIR.
+    curl -sLS https://onctl.sh/get.sh | env -u SUDO_USER ONCTL_INSTALL_DIR=/usr/local/bin ONCTL_NO_COMPLETION=1 bash >/dev/null
   else
     say "onctl already installed ($(onctl version 2>/dev/null || true)), skipping"
   fi
